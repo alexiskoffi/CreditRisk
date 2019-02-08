@@ -1,0 +1,204 @@
+---
+title: "Credit Risk"
+author: "Alexis Koffi"
+date: "08/02/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This project aims to improve on the state of the art in credit scoring by predicting the probability that somebody will experience financial distress in the next few years.
+
+When a borrower fails to fully reimburse a loan, referred to as a loan default, this results in a loss to the bank. Banks keep information on the default behaviour of past customers which can be used to predict the default behaviour of new customers, therefore helping assess risk and determine interest rates. Two widely used methods for calculating these predictions are logistic regression and classification trees.
+
+We will use the following library:
+
+```{r install-packages, echo=FALSE, message=FALSE, error=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+```
+
+```{r libraries, message=FALSE, error=FALSE}
+library(tidyverse)
+```
+
+# Data Exploration
+
+The data used comes from Kaggle, available [here](https://www.kaggle.com/c/GiveMeSomeCredit/data).
+Notice that we need to login before downloadind the zip file **"GiveMeSomeCredit.zip"**.
+We have already two files **cs-training.csv** for the training set and **cs-test.csv** for the testing set.
+    
+```{r}
+# /!\ Automatic download doesn't work with the code below, due to kaggle login + password
+
+# download.file("https://www.kaggle.com/c/2551/download-all", "GiveMeSomeCredit.zip")
+# unzip("GiveMeSomeCredit.zip", exdir = "data")
+# file.remove("GiveMeSomeCredit.zip")
+
+# So, I manually download the zip file and unzip it in a directory called "data" before working with
+
+training <- read.csv("data/cs-training.csv")
+test <- read.csv("data/cs-test.csv")
+str(training)
+```
+
+##### List of variables
+
+Here is a view of the the variables :
+
+*SeriousDlqin2yrs* : indicates default behaviour, with 1 representing default (loan repayment is overdue by 90 days or more) and 0 representing non-default.
+
+```{r, message=FALSE, error=FALSE}
+# SeriousDlqin2yrs Proportion
+prop.table(table(training$SeriousDlqin2yrs))
+```
+
+Default is a rare event. As seen in the table above, less than 7% of customers in this dataset defaulted on a loan.
+
+```{r, message=FALSE, error=FALSE}
+counts <- table(training$SeriousDlqin2yrs)
+barplot(counts, main = "Number of customers that have defaulted on a loan", ylab = "Frequency")
+```
+
+```{r, message=FALSE, error=FALSE}
+hist(training$age, main = "Histogram of age", xlab = "Age")
+```
+
+```{r, message=FALSE, error=FALSE}
+boxplot(training$age, ylab = "Age")
+```
+
+*Age* is normally distributed with one outlier (`Age == 0`).
+
+```{r, message=FALSE, error=FALSE}
+hist(training$MonthlyIncome, main = "Histogram of monthly income", xlab = "Monthly income")
+```
+
+```{r, message=FALSE, error=FALSE}
+plot(training$MonthlyIncome, ylab = "Monthly income")
+```
+
+```{r, message=FALSE, error=FALSE}
+index_highincome <- which(training$MonthlyIncome > 50000)
+new_data <- training[-index_highincome, ]
+
+hist(new_data$MonthlyIncome, main = "Histogram of monthly income", xlab = "Monthly income")
+```
+
+
+```{r, message=FALSE, error=FALSE}
+counts <- table(training$NumberOfDependents)
+barplot(counts, main = "Bar plot of the number of dependents", xlab = "Number of dependents")
+```
+
+```{r, message=FALSE, error=FALSE}
+hist(training$NumberOfDependents, ylab = "Number of dependents")
+```
+
+Most borrowers have less than one dependent.
+
+```{r, message=FALSE, error=FALSE}
+training_summary <- training[-1]
+summary(training_summary)
+```
+
+*MonthlyIncome* and *NumberOfDependents* have some `NA`s.
+One method for dealing with missing values is by replacing them with the median.
+
+
+```{r, message=FALSE, error=FALSE}
+replace_NA <- function(x){
+  index_NA <- which(is.na(x))
+  x[index_NA] <- median(x, na.rm = TRUE)
+  x
+}
+
+training$MonthlyIncome <- replace_NA(training$MonthlyIncome)
+training$NumberOfDependents <- replace_NA(training$NumberOfDependents)
+```
+
+As seen in the plots and summary above, there appear to be some outliers. 
+However, I will leave these for now because of the many observations.
+
+# Methods
+
+We are interested in predicting the probability of default in the `test` dataset.
+
+```{r, message=FALSE, error=FALSE}
+head(test$SeriousDlqin2yrs)
+```
+
+Note *SeriousDlqin2yrs* is `NA` for each observation.
+
+We can predict the probability of default by using logistic regression, which has an output between 0 and 1.
+
+```{r, message=FALSE, error=FALSE}
+log_model <- glm(SeriousDlqin2yrs ~ age, family = "binomial", data = training)
+summary(log_model)
+```
+
+##### Interpretation of coefficients
+
+The coefficient for *age* is negative. So, for every increase in *age* there is a lower probability of default (one extra year of age lowers the probability of default by about 3%).
+
+##### Multiple variables
+
+```{r, message=FALSE, error=FALSE}
+log_model_multi <- glm(SeriousDlqin2yrs ~ . - X, family = "binomial", data = training)
+summary(log_model_multi)
+```
+
+*RevolvingUtilizationOfUnsecuredLines* should be removed from the model because it is highly non-significant (p = 0.45885). I decided to keep *NumberOfOpenCreditLinesAndLoans* because it is only slightly above 0.05.
+
+```{r, message=FALSE, error=FALSE}
+log_model_multi <- glm(SeriousDlqin2yrs ~ . - X - RevolvingUtilizationOfUnsecuredLines, family = "binomial", data = training)
+```
+
+### Predicting the probability of default
+
+#### Missing values
+
+```{r, message=FALSE, error=FALSE}
+str(test)
+summary(test)
+```
+
+There are many `NA`s in the **test** dataset. We need to fix this because missing values are contagious (i.e., the model will predict `NA` for any row that has atleast 1 `NA` for any predictor variable). As seen above in the descriptive statistics, *MonthlyIncome* and *NumberOfDependents* have missing values.
+
+```{r, message=FALSE, error=FALSE}
+test_replace <- test
+test_replace$MonthlyIncome <- replace_NA(test_replace$MonthlyIncome)
+test_replace$NumberOfDependents <- replace_NA(test_replace$NumberOfDependents)
+```
+
+```{r, message=FALSE, error=FALSE}
+predictions <- predict(log_model_multi, newdata = test_replace, type = "response")
+range(predictions)
+```
+
+```{r, message=FALSE, error=FALSE}
+test_replace$SeriousDlqin2yrs <- predictions
+test_prob <- data.frame(test_replace$X, test_replace$SeriousDlqin2yrs)
+names(test_prob)[names(test_prob) == "test_replace.X"] <- "Id"
+names(test_prob)[names(test_prob) == "test_replace.SeriousDlqin2yrs"] <- "Probability"
+```
+
+\newpage
+
+# Results
+
+We can see the top ten of the predictions : 
+```{r, message=FALSE, error=FALSE}
+test_prob %>% 
+  arrange(desc(.$Probability)) %>%
+  head(10)
+```
+
+
+# Conclusion
+
+I have implemented a logistic regression model to predict the probability of a customer defaulting on a loan based on applicant information such as age and monthly income. 
+These probabilities can be used to assess risk and determine what interest rate to charge for a loan.
